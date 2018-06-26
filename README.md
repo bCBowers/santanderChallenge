@@ -16,6 +16,8 @@ File Descriptions:
 
 santanderv1.py -> ensemble model code
 
+exploreSantander.ipynb -> contains exploratory data analysis and plots with Santander data set
+
 submission.csv -> output code for submission to Kaggle
 
 sample_submission.csv -> file provided by the Kaggle challenge
