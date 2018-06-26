@@ -10,11 +10,13 @@ The four models applied so far are:
 
 - Extreme Gradient Boosting
 
-As expected, an average of the four techniques produces better results than any technique individually.
+As expected, an average of the four techniques produces better results than any technique individually.The individual models were developed with the help of kernels from Kaggle.
 
 File Descriptions:
 
 santanderv1.py -> ensemble model code
+
+submission.csv -> output code for submission to Kaggle
 
 sample_submission.csv -> file provided by the Kaggle challenge
 
