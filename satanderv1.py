@@ -203,12 +203,12 @@ test = test_full
 #Data is highly left skewed so convert target to log(target)
 train['log_target']=np.log(1+train['target'])
 y=train['log_target']
-train.drop(['target','log_target'], axis=1, inplace=True)
+train = train.drop(['target','log_target'], axis = 1)
 
 test_id=test['ID']
 train_id=train['ID']
-test.drop(['ID'], axis=1, inplace=True)
-train.drop(['ID'], axis=1, inplace=True)
+test=test.drop(['ID'], axis=1)
+train=train.drop(['ID'], axis=1)
 
 lgbm_params =  {
     'task': 'train',
@@ -268,10 +268,12 @@ X_target.shape
 
 ######## Log(target), cluster and categorize data, and run Category Boosting regression
 
+# Need to clean this section up to not require reloading of the data
+
 print("Load data...")
-train = train_full
+train = pd.read_csv('train.csv')
 train_raw = train
-test = test_full
+test = pd.read_csv('test.csv')
 subm = pd.read_csv('sample_submission.csv')
 print("Train shape: {}\nTest shape: {}".format(train.shape, test.shape))
 
@@ -282,7 +284,7 @@ N_COMP = 22            ### Number of decomposition components ###
 target = np.log1p(train['target']).values
 
 print("Define training features...")
-exclude_other = ['ID', 'target']
+exclude_other = ['ID', 'target', 'log_train']
 train_features = []
 for c in train.columns:
     if c not in exclude_other:
