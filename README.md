@@ -16,4 +16,6 @@ File Descriptions:
 
 santanderv1.py -> ensemble model code
 
-train.py, test.py, sample_submission.csv -> files provided by the Kaggle challenge
+sample_submission.csv -> file provided by the Kaggle challenge
+
+train.py, test.py -> these files are too big for Github but can be found on Kaggle: https://www.kaggle.com/c/santander-value-prediction-challenge/data
