@@ -20,6 +20,7 @@ import xgboost as xgb
 from sklearn.decomposition import FastICA, FactorAnalysis
 from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
 from catboost import CatBoostRegressor
+import seaborn as sns
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -29,11 +30,38 @@ warnings.filterwarnings('ignore')
 train_full = pd.read_csv('train.csv')
 test_full = pd.read_csv('test.csv')
 
-########### Log(target), drop duplicative/sparse columns, generate statistics, cluster, and Light Gradient Boosting
+################################ Pre-process to remove dupliciative or non-changing columns
 
-train_df = train_full
-test_df = test_full
+# Remove columns with a std of 0
+zero_std_cols = train_full.drop("ID", axis=1).columns[train_full.std() == 0]
+train_full.drop(zero_std_cols, axis=1, inplace=True)
+test_full.drop(zero_std_cols, axis=1, inplace=True)
+print("Removed %s constant columns") % len(zero_std_cols)
 
+# Remove duplicate columns
+colsToRemove = []
+colsScaned = []
+dupList = {}
+columns = train_full.columns
+for i in range(len(columns)-1):
+    v = train_full[columns[i]].values
+    dupCols = []
+    for j in range(i+1,len(columns)):
+        if np.array_equal(v, train_full[columns[j]].values):
+            colsToRemove.append(columns[j])
+            if columns[j] not in colsScaned:
+                dupCols.append(columns[j]) 
+                colsScaned.append(columns[j])
+                dupList[columns[i]] = dupCols
+colsToRemove = list(set(colsToRemove))
+train_full.drop(colsToRemove, axis=1, inplace=True)
+test_full.drop(colsToRemove, axis=1, inplace=True)
+print("Dropped %s duplicate columns") % len(colsToRemove)
+
+############################### Log(target), drop duplicative/sparse columns, generate statistics, cluster, and Light Gradient Boosting
+
+train_df = train_full.copy(deep=True)
+test_df = test_full.copy(deep=True)
 X_train = train_df.drop(["ID", "target"], axis=1)
 y_train = np.log1p(train_df["target"].values)
 
@@ -195,10 +223,10 @@ pred_test_full_seed /= np.float(len(seeds))
 
 print("LightGBM Training Completed...")
 
-######### Log(target) and LightGBM
+###################################################################### Log(target) and LightGBM
 
-train = train_full
-test = test_full
+train = train_full.copy(deep=True)
+test = test_full.copy(deep=True)
 
 #Data is highly left skewed so convert target to log(target)
 train['log_target']=np.log(1+train['target'])
@@ -266,15 +294,12 @@ X_target.append(np.exp(X_pred)-1)
 X_target = np.array(X_target)
 X_target.shape
 
-######## Log(target), cluster and categorize data, and run Category Boosting regression
-
-# Need to clean this section up to not require reloading of the data
+################################################## Log(target), cluster and categorize data, and run Category Boosting regression
 
 print("Load data...")
-train = pd.read_csv('train.csv')
+train = train_full.copy(deep=True)
 train_raw = train
-test = pd.read_csv('test.csv')
-subm = pd.read_csv('sample_submission.csv')
+test = test_full.copy(deep=True)
 print("Train shape: {}\nTest shape: {}".format(train.shape, test.shape))
 
 PERC_TRESHOLD = 0.98   ### Percentage of zeros in each feature ###
@@ -353,7 +378,7 @@ def rmsle(y_true, y_pred):
     assert len(y_true) == len(y_pred)
     return np.sqrt(np.mean(np.power(np.log(y_true + 1) - np.log(y_pred + 1), 2)))
 
-folds = KFold(n_splits=5, shuffle=True, random_state=546789)
+folds = model_selection.KFold(n_splits=5, shuffle=True, random_state=546789)
 oof_preds = np.zeros(train.shape[0])
 sub_preds = np.zeros(test.shape[0])
 train_preds = np.zeros(train.shape[0])
@@ -391,10 +416,10 @@ for n_fold, (trn_idx, val_idx) in enumerate(folds.split(train)):
 
 print("Full RMSLE score %.6f" % rmsle(np.exp(target)-1, np.exp(oof_preds)-1)) 
 
-######## Log(train) and then Extreme Gradient Boosting
+############################################################################# Log(train) and then Extreme Gradient Boosting
 
-train_df = train_full
-test_df = test_full
+train_df = train_full.copy(deep=True)
+test_df = test_full.copy(deep=True)
 
 X_train = train_df.drop(["ID", "target"], axis=1)
 y_train = np.log1p(train_df["target"].values)
@@ -449,9 +474,16 @@ final_pred = final_mod.predict(Y)
 sub['target'] = final_pred
 '''
 
-sub = pd.read_csv('sample_submission.csv')
+# Find correlation between ensemble models
+dataframe=pd.DataFrame({'x1': Y_target.mean(axis=0), 'x2':(np.exp(sub_preds)-1), 'x3': pred_test_xgb, 'x4': pred_test_full_seed})
+
+corr = dataframe.corr()
+sns.heatmap(corr, 
+            xticklabels=corr.columns.values,
+            yticklabels=corr.columns.values)
+
+# print final sub
 pred = (Y_target.mean(axis=0) + (np.exp(sub_preds)-1) + pred_test_xgb + pred_test_full_seed)/4
-
+sub = pd.read_csv('sample_submission.csv')
 sub['target'] = pred
-
 sub.to_csv('submission.csv', index=False)
