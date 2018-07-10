@@ -1,39 +1,256 @@
 # -*- coding: utf-8 -*-
 """
-Created on Thu Jun 21 06:05:16 2018
+Created on Fri Jul 06 14:41:06 2018
 
 @author: M29480
 """
 
-import pandas as pd
 import numpy as np
-from sklearn.cross_validation import KFold
-import lightgbm as lgb
-import time
+import pandas as pd
+import warnings
+
 from sklearn import model_selection
-from sklearn.model_selection import train_test_split
-from sklearn.decomposition import TruncatedSVD
-from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import normalize
+from sklearn import ensemble
+from scipy.stats import ks_2samp
+
+from sklearn import random_projection
+from sklearn.preprocessing import scale
+import gc
+from copy import deepcopy
+import time
+import progressbar
+
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, clone
+from sklearn.model_selection import KFold, cross_val_score
 import xgboost as xgb
-from sklearn.decomposition import FastICA, FactorAnalysis
+import lightgbm as lgb
+
+from sklearn.decomposition import PCA, TruncatedSVD, FastICA
 from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
 from catboost import CatBoostRegressor
+
+notebookstart= time.time()
 import seaborn as sns
+import matplotlib.pyplot as plt
 
-import warnings
-warnings.filterwarnings('ignore')
 
+################################### Combined ensemble using Light and Extreme Gradient Boosting
+
+warnings.filterwarnings("ignore")
+train = pd.read_csv('train.csv')
+test = pd.read_csv('test.csv')
+test_ID = test['ID']
+y_train = train['target']
+y_train = np.log1p(y_train)
+train.drop("ID", axis = 1, inplace = True)
+train.drop("target", axis = 1, inplace = True)
+test.drop("ID", axis = 1, inplace = True)
+
+zero_std_cols = train.columns[train.std() == 0]
+train.drop(zero_std_cols, axis=1, inplace=True)
+test.drop(zero_std_cols, axis=1, inplace=True)
+NUM_OF_DECIMALS = 32
+train = train.round(NUM_OF_DECIMALS)
+test = test.round(NUM_OF_DECIMALS)
+colsToRemove = []
+columns = train.columns
+for i in range(len(columns)-1):
+    v = train[columns[i]].values
+    dupCols = []
+    for j in range(i + 1,len(columns)):
+        if np.array_equal(v, train[columns[j]].values):
+            colsToRemove.append(columns[j])
+train.drop(colsToRemove, axis=1, inplace=True) 
+test.drop(colsToRemove, axis=1, inplace=True) 
+train.shape
+
+NUM_OF_FEATURES = 1000
+def rmsle(y, pred):
+    return np.sqrt(np.mean(np.power(y - pred, 2)))
+
+x1, x2, y1, y2 = model_selection.train_test_split(
+    train, y_train.values, test_size=0.20, random_state=5)
+model = ensemble.RandomForestRegressor(n_jobs=-1, random_state=7)
+model.fit(x1, y1)
+print(rmsle(y2, model.predict(x2)))
+
+col = pd.DataFrame({'importance': model.feature_importances_, 'feature': train.columns}).sort_values(
+    by=['importance'], ascending=[False])[:NUM_OF_FEATURES]['feature'].values
+train = train[col]
+test = test[col]
+train.shape
+
+THRESHOLD_P_VALUE = 0.005 
+THRESHOLD_STATISTIC = 0.25
+diff_cols = []
+for col in train.columns:
+    statistic, pvalue = ks_2samp(train[col].values, test[col].values)
+    if pvalue <= THRESHOLD_P_VALUE and np.abs(statistic) > THRESHOLD_STATISTIC:
+        diff_cols.append(col)
+for col in diff_cols:
+    if col in train.columns:
+        train.drop(col, axis=1, inplace=True)
+        test.drop(col, axis=1, inplace=True)
+train.shape
+
+ntrain = len(train)
+ntest = len(test)
+tmp = pd.concat([train,test])#RandomProjection
+weight = ((train != 0).sum()/len(train)).values
+
+tmp_train = train[train!=0]
+tmp_test = test[test!=0]
+train["weight_count"] = (tmp_train*weight).sum(axis=1)
+test["weight_count"] = (tmp_test*weight).sum(axis=1)
+train["count_not0"] = (train != 0).sum(axis=1)
+test["count_not0"] = (test != 0).sum(axis=1)
+train["sum"] = train.sum(axis=1)
+test["sum"] = test.sum(axis=1)
+train["var"] = tmp_train.var(axis=1)
+test["var"] = tmp_test.var(axis=1)
+train["median"] = tmp_train.median(axis=1)
+test["median"] = tmp_test.median(axis=1)
+train["mean"] = tmp_train.mean(axis=1)
+test["mean"] = tmp_test.mean(axis=1)
+train["std"] = tmp_train.std(axis=1)
+test["std"] = tmp_test.std(axis=1)
+train["max"] = tmp_train.max(axis=1)
+test["max"] = tmp_test.max(axis=1)
+train["min"] = tmp_train.min(axis=1)
+test["min"] = tmp_test.min(axis=1)
+del(tmp_train)
+del(tmp_test)
+
+# train data is valid , test data has nan and infinite
+tmp = pd.DataFrame(np.nan_to_num(tmp))
+# Go through the columns one at a time (can't do it all at once for this dataset)
+total_df = deepcopy(tmp)      
+print('np.any(np.isnan(total_df)', np.any(np.isnan(total_df)))
+print('np.all(np.isfinite(total_df)', np.all(np.isfinite(total_df)))
+
+p = progressbar.ProgressBar()
+p.start()
+
+# Mean-variance scale all columns excluding 0-values'
+print('total_df.columns:',total_df.columns) 
+columnsCount = len(total_df.columns)
+for col in total_df.columns:    
+    p.update(col/columnsCount * 100)
+
+    # Detect outliers in this column
+    data = total_df[col].values
+    data_mean, data_std = np.mean(data), np.std(data)
+    cut_off = data_std * 3
+    lower, upper = data_mean - cut_off, data_mean + cut_off
+    outliers = [x for x in data if x < lower or x > upper]
+    
+    # If there are crazy high values, do a log-transform
+    if len(outliers) > 0:
+        non_zero_idx = data != 0
+        total_df.loc[non_zero_idx, col] = np.log(data[non_zero_idx])
+    
+    # Scale non-zero column values
+    nonzero_rows = total_df[col] != 0
+    if  np.isfinite(total_df.loc[nonzero_rows, col]).all():
+        total_df.loc[nonzero_rows, col] = scale(total_df.loc[nonzero_rows, col])
+        if  np.isfinite(total_df[col]).all():
+            # Scale all column values
+            total_df[col] = scale(total_df[col])
+    gc.collect()
+    
+p.finish()
+
+NUM_OF_COM = 100 #need tuned
+transformer = random_projection.SparseRandomProjection(n_components = NUM_OF_COM)
+RP = transformer.fit_transform(tmp)
+rp = pd.DataFrame(RP)
+columns = ["RandomProjection{}".format(i) for i in range(NUM_OF_COM)]
+rp.columns = columns
+
+rp_train = rp[:ntrain]
+rp_test = rp[ntrain:]
+rp_test.index = test.index
+
+#concat RandomProjection and raw data
+train = pd.concat([train,rp_train],axis=1)
+test = pd.concat([test,rp_test],axis=1)
+
+del(rp_train)
+del(rp_test)
+train.shape
+
+#define evaluation method for a given model. we use k-fold cross validation on the training set. 
+#the loss function is root mean square logarithm error between target and prediction
+#note: train and y_train are feeded as global variables
+NUM_FOLDS = 5 #need tuned
+def rmsle_cv(model):
+    kf = KFold(NUM_FOLDS, shuffle=True, random_state=42).get_n_splits(train.values)
+    rmse= np.sqrt(-cross_val_score(model, train.values, y_train, scoring="neg_mean_squared_error", cv = kf))
+    return(rmse)
+model_xgb = xgb.XGBRegressor(colsample_bytree=0.055, colsample_bylevel =0.5, 
+                             gamma=1.5, learning_rate=0.02, max_depth=32, 
+                             objective='reg:linear',booster='gbtree',
+                             min_child_weight=57, n_estimators=1000, reg_alpha=0, 
+                             reg_lambda = 0,eval_metric = 'rmse', subsample=0.7, 
+                             silent=1, n_jobs = -1, early_stopping_rounds = 14,
+                             random_state =7, nthread = -1)
+model_lgb = lgb.LGBMRegressor(objective='regression',num_leaves=144,
+                              learning_rate=0.005, n_estimators=720, max_depth=13,
+                              metric='rmse',is_training_metric=True,
+                              max_bin = 55, bagging_fraction = 0.8,verbose=-1,
+                              bagging_freq = 5, feature_fraction = 0.9)  
+
+#ensemble method: model averaging
+class AveragingModels(BaseEstimator, RegressorMixin, TransformerMixin):
+    def __init__(self, models):
+        self.models = models
+        
+    # we define clones of the original models to fit the data in
+    # the reason of clone is avoiding affect the original base models
+    def fit(self, X, y):
+        self.models_ = [clone(x) for x in self.models]  
+        # Train cloned base models
+        for model in self.models_:
+            model.fit(X, y)
+        return self
+    
+    #Now we do the predictions for cloned models and average them
+    def predict(self, X):
+        predictions = np.column_stack([ model.predict(X) for model in self.models_ ])
+        return np.mean(predictions, axis=1)
+
+#cross validation   
+score = rmsle_cv(model_xgb)
+print("Xgboost score: {:.4f} ({:.4f})\n".format(score.mean(), score.std()))
+score = rmsle_cv(model_lgb)
+print("LGBM score: {:.4f} ({:.4f})\n" .format(score.mean(), score.std()))
+averaged_models = AveragingModels(models = (model_xgb, model_lgb))
+score = rmsle_cv(averaged_models)
+print("averaged score: {:.4f} ({:.4f})\n" .format(score.mean(), score.std()))
+
+averaged_models.fit(train.values, y_train)
+pred = np.expm1(averaged_models.predict(test.values))
+
+############################################################################## CatBoost + decomposition features
+# Specify index/ target name
+id_col = "ID"
+target_var = "target"
+
+# House Keeping Parameters
+Debug = False
+Home = False
+Build_Results_csv = False # if running for first time
 
 # Read train and test files
-train_full = pd.read_csv('train.csv')
-test_full = pd.read_csv('test.csv')
+train_full = pd.read_csv('train.csv', index_col = id_col)
+traindex = train_full.index
 
-################################ Pre-process to remove dupliciative or non-changing columns
+test_full = pd.read_csv('test.csv', index_col = id_col)
+traindex = test_full.index
 
 # Remove columns with a std of 0
-zero_std_cols = train_full.drop("ID", axis=1).columns[train_full.std() == 0]
+zero_std_cols = train_full.columns[train_full.std() == 0]
 train_full.drop(zero_std_cols, axis=1, inplace=True)
 test_full.drop(zero_std_cols, axis=1, inplace=True)
 print("Removed %s constant columns") % len(zero_std_cols)
@@ -58,267 +275,70 @@ train_full.drop(colsToRemove, axis=1, inplace=True)
 test_full.drop(colsToRemove, axis=1, inplace=True)
 print("Dropped %s duplicate columns") % len(colsToRemove)
 
-############################### Log(target), drop duplicative/sparse columns, generate statistics, cluster, and Light Gradient Boosting
+changed_type = []
+for col, dtype in train_full.dtypes.iteritems():
+    if dtype==np.int64:
+        max_val = np.max(train_full[col])
+        bits = np.log(max_val)/np.log(2)
+        if bits < 8:
+            new_dtype = np.uint8
+        elif bits < 16:
+            new_dtype = np.uint16
+        elif bits < 32:
+            new_dtype = np.uint32
+        else:
+            new_dtype = None
+        if new_dtype:
+            changed_type.append(col)
+            train_full[col] = train_full[col].astype(new_dtype)
+print('Changed types on {} columns'.format(len(changed_type)))
 
-train_df = train_full.copy(deep=True)
-test_df = test_full.copy(deep=True)
-X_train = train_df.drop(["ID", "target"], axis=1)
-y_train = np.log1p(train_df["target"].values)
-
-X_test = test_df.drop(["ID"], axis=1)
-
-# check and remove constant columns
-colsToRemove = []
-for col in X_train.columns:
-    if X_train[col].std() == 0: 
-        colsToRemove.append(col)
-        
-# remove constant columns in the training set
-X_train.drop(colsToRemove, axis=1, inplace=True)
-
-# remove constant columns in the test set
-X_test.drop(colsToRemove, axis=1, inplace=True) 
-
-# Check and remove duplicate columns
-colsToRemove = []
-colsScaned = []
-dupList = {}
-
-columns = X_train.columns
-
-for i in range(len(columns)-1):
-    v = X_train[columns[i]].values
-    dupCols = []
-    for j in range(i+1,len(columns)):
-        if np.array_equal(v, X_train[columns[j]].values):
-            colsToRemove.append(columns[j])
-            if columns[j] not in colsScaned:
-                dupCols.append(columns[j]) 
-                colsScaned.append(columns[j])
-                dupList[columns[i]] = dupCols
-                
-# remove duplicate columns in the training set
-X_train.drop(colsToRemove, axis=1, inplace=True) 
-
-# remove duplicate columns in the testing set
-X_test.drop(colsToRemove, axis=1, inplace=True)
-
-def drop_sparse(train, test):
-    flist = [x for x in train.columns if not x in ['ID','target']]
-    for f in flist:
-        if len(np.unique(train[f]))<2:
-            train.drop(f, axis=1, inplace=True)
-            test.drop(f, axis=1, inplace=True)
-    return train, test
-
-X_train, X_test = drop_sparse(X_train, X_test)
-
-
-def add_SumZeros(train, test, features):
-    flist = [x for x in train.columns if not x in ['ID','target']]
-    if 'SumZeros' in features:
-        train.insert(1, 'SumZeros', (train[flist] == 0).astype(int).sum(axis=1))
-        test.insert(1, 'SumZeros', (test[flist] == 0).astype(int).sum(axis=1))
-    flist = [x for x in train.columns if not x in ['ID','target']]
-
-    return train, test
-
-X_train, X_test = add_SumZeros(X_train, X_test, ['SumZeros'])
-
-
-
-def add_SumValues(train, test, features):
-    flist = [x for x in train.columns if not x in ['ID','target']]
-    if 'SumValues' in features:
-        train.insert(1, 'SumValues', (train[flist] != 0).astype(int).sum(axis=1))
-        test.insert(1, 'SumValues', (test[flist] != 0).astype(int).sum(axis=1))
-    flist = [x for x in train.columns if not x in ['ID','target']]
-
-    return train, test
-
-X_train, X_test = add_SumValues(X_train, X_test, ['SumValues'])
-
-def add_OtherAgg(train, test, features):
-    flist = [x for x in train.columns if not x in ['ID','target','SumZeros','SumValues']]
-    if 'OtherAgg' in features:
-        train['Mean']   = train[flist].mean(axis=1)
-        train['Median'] = train[flist].median(axis=1)
-        train['Mode']   = train[flist].mode(axis=1)
-        train['Max']    = train[flist].max(axis=1)
-        train['Var']    = train[flist].var(axis=1)
-        train['Std']    = train[flist].std(axis=1)
-        
-        test['Mean']   = test[flist].mean(axis=1)
-        test['Median'] = test[flist].median(axis=1)
-        test['Mode']   = test[flist].mode(axis=1)
-        test['Max']    = test[flist].max(axis=1)
-        test['Var']    = test[flist].var(axis=1)
-        test['Std']    = test[flist].std(axis=1)
-    flist = [x for x in train.columns if not x in ['ID','target','SumZeros','SumValues']]
-
-    return train, test
-
-X_train, X_test = add_OtherAgg(X_train, X_test, ['OtherAgg'])
-
-flist = [x for x in X_train.columns if not x in ['ID','target']]
-
-flist_kmeans = []
-for ncl in range(2,11):
-    cls = KMeans(n_clusters=ncl)
-    cls.fit_predict(X_train[flist].values)
-    X_train['kmeans_cluster_'+str(ncl)] = cls.predict(X_train[flist].values)
-    X_test['kmeans_cluster_'+str(ncl)] = cls.predict(X_test[flist].values)
-    flist_kmeans.append('kmeans_cluster_'+str(ncl))
-
-flist = [x for x in X_train.columns if not x in ['ID','target']]
-
-n_components = 20
-flist_pca = []
-pca = PCA(n_components=n_components)
-x_train_projected = pca.fit_transform(normalize(X_train[flist], axis=0))
-x_test_projected = pca.transform(normalize(X_test[flist], axis=0))
-for npca in range(0, n_components):
-    X_train.insert(1, 'PCA_'+str(npca+1), x_train_projected[:, npca])
-    X_test.insert(1, 'PCA_'+str(npca+1), x_test_projected[:, npca])
-    flist_pca.append('PCA_'+str(npca+1))
-
-def run_lgb(train_X, train_y, val_X, val_y, test_X):
-    params = {
-        "objective" : "regression",
-        "metric" : "rmse",
-        "num_leaves" : 30,
-        "learning_rate" : 0.01,
-        "bagging_fraction" : 0.7,
-        "feature_fraction" : 0.7,
-        "bagging_frequency" : 5,
-        "bagging_seed" : 2018,
-        "verbosity" : -1
-    }
-    
-    lgtrain = lgb.Dataset(train_X, label=train_y)
-    lgval = lgb.Dataset(val_X, label=val_y)
-    evals_result = {}
-    model = lgb.train(params, lgtrain, 1000, valid_sets=[lgtrain, lgval], early_stopping_rounds=100, 
-                      verbose_eval=200, evals_result=evals_result)
-    
-    pred_test_y = model.predict(test_X, num_iteration=model.best_iteration)
-    return pred_test_y, model, evals_result
-
-# Training LGB
-seeds = [42, 2018]
-pred_test_full_seed = 0
-for seed in seeds:
-    kf = model_selection.KFold(n_splits=5, shuffle=True, random_state=seed)
-    pred_test_full = 0
-    for dev_index, val_index in kf.split(X_train):
-        dev_X, val_X = X_train.loc[dev_index,:], X_train.loc[val_index,:]
-        dev_y, val_y = y_train[dev_index], y_train[val_index]
-        pred_test, model, evals_result = run_lgb(dev_X, dev_y, val_X, val_y, X_test)
-        pred_test_full += pred_test
-    pred_test_full /= 5.
-    pred_test_full = np.expm1(pred_test_full)
-    pred_test_full_seed += pred_test_full
-    print("Seed {} completed....".format(seed))
-pred_test_full_seed /= np.float(len(seeds))
-
-print("LightGBM Training Completed...")
-
-###################################################################### Log(target) and LightGBM
-
-train = train_full.copy(deep=True)
-test = test_full.copy(deep=True)
-
-#Data is highly left skewed so convert target to log(target)
-train['log_target']=np.log(1+train['target'])
-y=train['log_target']
-train = train.drop(['target','log_target'], axis = 1)
-
-test_id=test['ID']
-train_id=train['ID']
-test=test.drop(['ID'], axis=1)
-train=train.drop(['ID'], axis=1)
-
-lgbm_params =  {
-    'task': 'train',
-    'boosting_type': 'gbdt',
-    'objective': 'regression',
-    'metric': 'rmse',
-    'max_depth': 8,
-    'num_leaves': 64,  # 63, 127, 255
-    'feature_fraction': 0.8, # 0.1, 0.01
-    'bagging_fraction': 0.8,
-    'learning_rate': 0.01, #0.00625,#125,#0.025,#05,
-    'verbosose': 1
+sparsity = {
+    col: (train_full[col] == 0).mean()
+    for idx, col in enumerate(train_full)
 }
+sparsity = pd.Series(sparsity)
 
-Y_target = []
-for fold_id,(train_idx, val_idx) in enumerate(KFold(n=train.shape[0],n_folds=10, random_state=42,shuffle=True)):
-    print('FOLD:',fold_id)
-    X_train = train.values[train_idx]
-    y_train = y.values[train_idx]
-    X_valid = train.values[val_idx]
-    y_valid =  y.values[val_idx]
-    
-    
-    lgtrain = lgb.Dataset(X_train, y_train,
-                feature_name=train.columns.tolist(),
-    #             categorical_feature = categorical
-                         )
-
-    lgvalid = lgb.Dataset(X_valid, y_valid,
-                feature_name=train.columns.tolist(),
-    #             categorical_feature = categorical
-                         )
-
-    modelstart = time.time()
-    lgb_clf = lgb.train(
-        lgbm_params,
-        lgtrain,
-        num_boost_round=30000,
-        valid_sets=[lgtrain, lgvalid],
-        valid_names=['train','valid'],
-        early_stopping_rounds=100,
-        verbose_eval=100
-    )
-    
-    test_pred = lgb_clf.predict(test.values)
-    Y_target.append(np.exp(test_pred)-1)
-    print('fold finish after', time.time()-modelstart)
-    
-Y_target = np.array(Y_target)
-Y_target.shape
-
-X_target = []
-X_pred = lgb_clf.predict(train.values)
-X_target.append(np.exp(X_pred)-1)
-X_target = np.array(X_target)
-X_target.shape
-
-################################################## Log(target), cluster and categorize data, and run Category Boosting regression
+# 2. CatBoost + decomposition features
 
 print("Load data...")
 train = train_full.copy(deep=True)
-train_raw = train
 test = test_full.copy(deep=True)
+target = np.log1p(train['target']).values
+subm = pd.read_csv('sample_submission.csv')
+print("Train shape: {}\nTest shape: {}".format(train.shape, test.shape))
+col = [c for c in train.columns if c not in ['target']]
+
+scl = preprocessing.StandardScaler()
+def rmsle(y, pred):
+    return np.sqrt(np.mean(np.power(np.log1p(y)-np.log1p(pred), 2)))
+
+x1, x2, y1, y2 = model_selection.train_test_split(train[col], train.target.values, test_size=0.10, random_state=5)
+model = RandomForestRegressor(n_jobs = -1, random_state = 7)
+model.fit(scl.fit_transform(x1), y1)
+print(rmsle(y2, model.predict(scl.transform(x2))))
+
+col = pd.DataFrame({'importance': model.feature_importances_, 'feature': col}).sort_values(by=['importance'], ascending=[False])[:600]['feature'].values
+
+#Added Columns from feature_selection
+train = train[['target']+list(col)]
+test = test[list(col)]
 print("Train shape: {}\nTest shape: {}".format(train.shape, test.shape))
 
-PERC_TRESHOLD = 0.98   ### Percentage of zeros in each feature ###
-N_COMP = 22            ### Number of decomposition components ###
-
-
-target = np.log1p(train['target']).values
+N_COMP = 20            ### Number of decomposition components ###
 
 print("Define training features...")
-exclude_other = ['ID', 'target', 'log_train']
+exclude_other = ['ID', 'target']
 train_features = []
 for c in train.columns:
+    #if c not in cols_to_drop \
+    #and c not in exclude_other:
     if c not in exclude_other:
         train_features.append(c)
 print("Number of featuress for training: %s" % len(train_features))
 
 train, test = train[train_features], test[train_features]
 print("\nTrain shape: {}\nTest shape: {}".format(train.shape, test.shape))
-
 
 print("\nStart decomposition process...")
 print("PCA")
@@ -336,11 +356,6 @@ ica = FastICA(n_components=N_COMP, random_state=17)
 ica_results_train = ica.fit_transform(train)
 ica_results_test = ica.transform(test)
 
-print("FA")
-fa = FactorAnalysis(n_components=N_COMP, random_state=17)
-fa_results_train = fa.fit_transform(train)
-fa_results_test = fa.transform(test)
-
 print("GRP")
 grp = GaussianRandomProjection(n_components=N_COMP, eps=0.1, random_state=17)
 grp_results_train = grp.fit_transform(train)
@@ -355,135 +370,65 @@ print("Append decomposition components to datasets...")
 for i in range(1, N_COMP + 1):
     train['pca_' + str(i)] = pca_results_train[:, i - 1]
     test['pca_' + str(i)] = pca_results_test[:, i - 1]
-    
-    train['tsvd_' + str(i)] = tsvd_results_train[:, i - 1]
-    test['tsvd_' + str(i)] = tsvd_results_test[:, i - 1]
 
     train['ica_' + str(i)] = ica_results_train[:, i - 1]
     test['ica_' + str(i)] = ica_results_test[:, i - 1]
-    
-    train['fa_' + str(i)] = fa_results_train[:, i - 1]
-    test['fa_' + str(i)] = fa_results_test[:, i - 1]
+
+    train['tsvd_' + str(i)] = tsvd_results_train[:, i - 1]
+    test['tsvd_' + str(i)] = tsvd_results_test[:, i - 1]
 
     train['grp_' + str(i)] = grp_results_train[:, i - 1]
     test['grp_' + str(i)] = grp_results_test[:, i - 1]
 
     train['srp_' + str(i)] = srp_results_train[:, i - 1]
     test['srp_' + str(i)] = srp_results_test[:, i - 1]
-print("\nTrain shape: {}\nTest shape: {}".format(train.shape, test.shape))
+print('\nTrain shape: {}\nTest shape: {}'.format(train.shape, test.shape))
 
-
-print("\nModelling...")
+print('\nModelling...')
 def rmsle(y_true, y_pred):
     assert len(y_true) == len(y_pred)
     return np.sqrt(np.mean(np.power(np.log(y_true + 1) - np.log(y_pred + 1), 2)))
 
-folds = model_selection.KFold(n_splits=5, shuffle=True, random_state=546789)
+folds = KFold(n_splits=5, shuffle=True, random_state=546789)
 oof_preds = np.zeros(train.shape[0])
 sub_preds = np.zeros(test.shape[0])
-train_preds = np.zeros(train.shape[0])
-
 
 for n_fold, (trn_idx, val_idx) in enumerate(folds.split(train)):
     trn_x, trn_y = train.ix[trn_idx], target[trn_idx]
     val_x, val_y = train.ix[val_idx], target[val_idx]
-    
-    cb_model = CatBoostRegressor(iterations=1000,
-                                 learning_rate=0.1,
-                                 depth=4,
-                                 l2_leaf_reg=20,
-                                 bootstrap_type='Bernoulli',
-                                 subsample=0.6,
-                                 eval_metric='RMSE',
-                                 metric_period=50,
-                                 od_type='Iter',
-                                 od_wait=45,
-                                 random_seed=17,
-                                 allow_writing_files=False)
-    
-    cb_model.fit(trn_x, trn_y,
-                 eval_set=(val_x, val_y),
-                 cat_features=[],
-                 use_best_model=True,
-                 verbose=True)    
-    
+    cb_model = CatBoostRegressor(iterations=1000, learning_rate=0.1, depth=4, l2_leaf_reg=20, bootstrap_type='Bernoulli', subsample=0.6, eval_metric='RMSE', metric_period=50, od_type='Iter', od_wait=45, random_seed=17, allow_writing_files=False)
+    cb_model.fit(trn_x, trn_y, eval_set=(val_x, val_y), cat_features=[], use_best_model=True, verbose=True)
     oof_preds[val_idx] = cb_model.predict(val_x)
     sub_preds += cb_model.predict(test) / folds.n_splits
-    
-    train_preds += cb_model.predict(train) / folds.n_splits
-    
     print("Fold %2d RMSLE : %.6f" % (n_fold+1, rmsle(np.exp(val_y)-1, np.exp(oof_preds[val_idx])-1)))
 
 print("Full RMSLE score %.6f" % rmsle(np.exp(target)-1, np.exp(oof_preds)-1)) 
+cb_ans = np.exp(sub_preds) - 1
 
-############################################################################# Log(train) and then Extreme Gradient Boosting
-
-train_df = train_full.copy(deep=True)
-test_df = test_full.copy(deep=True)
-
-X_train = train_df.drop(["ID", "target"], axis=1)
-y_train = np.log1p(train_df["target"].values)
-
-X_test = test_df.drop(["ID"], axis=1)
-
-dev_X, val_X, dev_y, val_y = train_test_split(X_train, y_train, test_size = 0.2, random_state = 42)
-
-
-def run_xgb(train_X, train_y, val_X, val_y, test_X):
-    params = {'objective': 'reg:linear', 
-          'eval_metric': 'rmse',
-          'eta': 0.001,
-          'max_depth': 10, 
-          'subsample': 0.6, 
-          'colsample_bytree': 0.6,
-          'alpha':0.001,
-          'random_state': 42, 
-          'silent': True}
-    
-    tr_data = xgb.DMatrix(train_X, train_y)
-    va_data = xgb.DMatrix(val_X, val_y)
-    
-    watchlist = [(tr_data, 'train'), (va_data, 'valid')]
-    
-    model_xgb = xgb.train(params, tr_data, 10000, watchlist, maximize=False, early_stopping_rounds = 100, verbose_eval=50)
-    
-    dtest = xgb.DMatrix(test_X)
-    xgb_pred_y = np.expm1(model_xgb.predict(dtest, ntree_limit=model_xgb.best_ntree_limit))
-    
-    return xgb_pred_y, model_xgb
-
-# Training XGB
-pred_test_xgb, model_xgb = run_xgb(dev_X, dev_y, val_X, val_y, X_test)
-print("XGB Training Completed...")
-
-'''
-X1 = X_target.mean(axis=0)
-X2 = np.exp(train_preds)-1
-
-X=pd.DataFrame({'x1':X1, 'x2':X2})
-
-final_mod = sm.OLS(train_raw['target'], X).fit()
-
-final_mod.summary()
-
-sub = pd.read_csv('sample_submission.csv')
-
-Y=pd.DataFrame({'x1':Y_target.mean(axis=0), 'x2':np.exp(sub_preds)-1})
-
-final_pred = final_mod.predict(Y)
-sub['target'] = final_pred
-'''
+############################################################## Final visualizations and solution processing
 
 # Find correlation between ensemble models
-dataframe=pd.DataFrame({'x1': Y_target.mean(axis=0), 'x2':(np.exp(sub_preds)-1), 'x3': pred_test_xgb, 'x4': pred_test_full_seed})
-
+print('merging..')
+dataframe=pd.DataFrame({'CB': cb_ans, 'LGB_XGB': pred})
 corr = dataframe.corr()
 sns.heatmap(corr, 
             xticklabels=corr.columns.values,
             yticklabels=corr.columns.values)
 
-# print final sub
-pred = (Y_target.mean(axis=0) + (np.exp(sub_preds)-1) + pred_test_xgb + pred_test_full_seed)/4
-sub = pd.read_csv('sample_submission.csv')
-sub['target'] = pred
-sub.to_csv('submission.csv', index=False)
+# View a distribution of solutions
+plot_frame=dataframe.reset_index()
+plot_frame = plot_frame[:100]
+ax = plot_frame.plot.scatter(x='index', y='CB', color='r', label='CB')
+plot_frame.plot.scatter(x='index', y='LGB_XGB', color='b', ax=ax, label ='LGB_XGB')
+ax.set_xlabel('index')
+ax.set_ylabel('target')
+plt.show
+
+# Combine model results and write submission file
+ensemble_ans = (cb_ans + pred) / 2
+
+subm = pd.read_csv('sample_submission.csv')
+
+subm['target'] = ensemble_ans
+
+subm.to_csv('submission.csv',index=False)
