@@ -1,16 +1,12 @@
-This project is a solution to the Santander Value Prediction Challenge: https://www.kaggle.com/c/santander-value-prediction-challenge. I joined this challenge to expirement with ensemble models like LightGBM and XGBoost. My solution combines four different ensemble approaches using a simple averages. The challenge has only been live for a few days, so I plan to iterate and improve on my solution. As of 6/26, I'm in 392 place out of 1389 teams and I'm currently working alone.
+This project is a solution to the Santander Value Prediction Challenge: https://www.kaggle.com/c/santander-value-prediction-challenge. I joined this challenge to expirement with ensemble models like LightGBM and XGBoost. My solution combines an approaching using Light Gradient Boosting and Extreme Gradient Boosting with an approach using Category Boosting Rgression. As of 7/10, I'm in 649 place out of 2789 teams and I'm currently working alone.
 
-The four models applied so far are:
+My model combines:
 
-- Feature Reduction and LightGBM
-
-- LightGBM
+- LightGBM and Extreme Gradient Boosting
 
 - Feature Reduction/Clustering and Category Boosting Regression
 
-- Extreme Gradient Boosting
-
-As expected, an average of the four techniques produces better results than any technique individually.The individual models were developed with the help of kernels from Kaggle.
+The individual models were developed with the help of kernels from Kaggle.
 
 File Descriptions:
 
